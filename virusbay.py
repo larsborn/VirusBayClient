@@ -238,8 +238,7 @@ class VirusBayApi:
 
         return UploadDetails.from_api(response.json())
 
-    def download(self, hash):
-        upload = self.get_details(hash)
+    def download(self, upload: UploadDetails) -> bytes:
         response = self.session.get(F'{self.BASE_URL}/api/sample/{upload.id}/download/link', headers={
             'authority': 'beta.virusbay.io',
             'authorization': F'JWT {self._get_token()}',
@@ -252,7 +251,7 @@ class VirusBayApi:
         if response.status_code != 200:
             raise VirusBayApiException(F'Cannot download sample for hash {hash}', response.content)
 
-        return upload.sha256, response.content
+        return response.content
 
 
 class ConsoleHandler(logging.Handler):
@@ -381,13 +380,15 @@ if __name__ == '__main__':
                 if os.path.exists(sample_hash):
                     logger.warning(F'File with name "{sample_hash}" already exists, skipping download.')
                     continue
-                logger.info(F'Downloading {sample_hash}...')
-                sha256, payload = api.download(sample_hash)
-                if os.path.exists(sha256):
-                    logger.warning(F'File with name "{sha256}" already exists, not saving.')
+                logger.info(F'Querying for {sample_hash}...')
+                upload = api.get_details(sample_hash)
+                if os.path.exists(upload.sha256):
+                    logger.warning(F'File with name "{upload.sha256}" already exists, not saving.')
                     continue
+                logger.info(F'Sample exists on VirusBay: storing to "{upload.sha256}"')
+                payload = api.download(upload)
                 total_size += len(payload)
-                with open(sha256, 'wb') as fp:
+                with open(upload.sha256, 'wb') as fp:
                     fp.write(payload)
             logger.info(F'Downloaded a total of {total_size} bytes')
 

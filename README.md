@@ -21,6 +21,15 @@ to scrape a few pages from your personal feed may look like the following:
 [INFO] 0 new entries on page 5.
 ```
 
+Similarly, this client can also be used to download samples from VirusBay
+```Batch
+> virusbay download 890a58f200dfff23165df9e1b088e58f
+[INFO] Querying for 890a58f200dfff23165df9e1b088e58f...
+[INFO] <VirusBayUserDetails role=user is_manager=False first_login=False qa_credits=0 credits=8>
+[INFO] Sample exists on VirusBay: storing to "5f56d5748940e4039053f85978074bde16d64bd5ba97f6f0026ba8172cb29e93"
+[INFO] Downloaded a total of 167936 bytes
+```
+
 
 
 [virusbay.io]: https://beta.virusbay.io/
