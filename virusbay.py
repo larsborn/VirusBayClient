@@ -155,7 +155,8 @@ class VirusBayUserDetails:
 
 
 class UploadDetails:
-    def __init__(self, id, uploaded_by_name, md5, sha1, sha256, publish_date, tags, pending):
+    def __init__(self, id, uploaded_by_name, md5, sha1, sha256, publish_date, tags, pending, file_type, file_size,
+                 number_of_downloads):
         self.id = id
         self.uploaded_by_name = uploaded_by_name
         self.md5 = md5
@@ -164,6 +165,33 @@ class UploadDetails:
         self.publish_date = publish_date
         self.tags = tags
         self.pending = pending
+        self.file_type = file_type
+        self.file_size = file_size
+        self.number_of_downloads = number_of_downloads
+
+    def update(self, other_upload):
+        if other_upload.id:
+            self.id = other_upload.id
+        if other_upload.uploaded_by_name:
+            self.uploaded_by_name = other_upload.uploaded_by_name
+        if other_upload.md5:
+            self.md5 = other_upload.md5
+        if other_upload.sha1:
+            self.sha1 = other_upload.sha1
+        if other_upload.sha256:
+            self.sha256 = other_upload.sha256
+        if other_upload.publish_date:
+            self.publish_date = other_upload.publish_date
+        if other_upload.tags:
+            self.tags = other_upload.tags
+        if other_upload.pending:
+            self.pending = other_upload.pending
+        if other_upload.file_type:
+            self.file_type = other_upload.file_type
+        if other_upload.file_size:
+            self.file_size = other_upload.file_size
+        if other_upload.number_of_downloads:
+            self.number_of_downloads = other_upload.number_of_downloads
 
     @staticmethod
     def from_api(row):
@@ -175,11 +203,30 @@ class UploadDetails:
             row['sha256'],
             datetime.datetime.strptime(row['publishDate'], '%Y-%m-%dT%H:%M:%S.%fZ'),
             [tag['lowerCaseName'] for tag in row['tags']],
-            row['pending'],
+            'pending' in row.keys() and row['pending'],
+            row['fileType'] if 'fileType' in row.keys() else None,
+            row['fileSize'] if 'fileSize' in row.keys() else None,
+            row['numberOfDownloads'] if 'numberOfDownloads' in row.keys() else None,
+        )
+
+    @staticmethod
+    def from_list(row):
+        return UploadDetails(
+            row['_id'],
+            row['uploadedBy']['name'],
+            row['md5'],
+            None,
+            None,
+            datetime.datetime.strptime(row['publishDate'], '%Y-%m-%dT%H:%M:%S.%fZ'),
+            [tag['lowerCaseName'] for tag in row['tags']],
+            None,
+            None,
+            None,
+            None,
         )
 
     def __repr__(self):
-        return F'<UploadDetails id={self.id}>'
+        return F'<UploadDetails id={self.id} {self.md5}>'
 
 
 class VirusBayApi:
@@ -253,13 +300,25 @@ class VirusBayApi:
 
         return response.content
 
+    def list_samples(self) -> typing.Iterator[UploadDetails]:
+        response = self.session.get(F'{self.BASE_URL}/sample/data', headers={
+            'authority': 'beta.virusbay.io',
+            'authorization': F'JWT {self._get_token()}',
+        })
+        if response.status_code != 200:
+            raise VirusBayApiException(F'Cannot retrieve list of samples', response.content)
+
+        j = response.json()
+        for row in j['recent'] + j['top']:
+            yield UploadDetails.from_list(row)
+
 
 class ConsoleHandler(logging.Handler):
     def emit(self, record):
         print('[%s] %s' % (record.levelname, record.msg))
 
 
-class Storage:
+class StorageBase:
     def __init__(self, file_name):
         if os.path.exists(file_name):
             with open(file_name, 'r') as fp:
@@ -271,6 +330,28 @@ class Storage:
         with open(file_name, 'w') as fp:
             json.dump(sorted(self.storage, key=lambda x: x['publish_date']), fp, indent=4)
 
+    @staticmethod
+    def _for_json(data):
+        if data is None:
+            return None
+        if isinstance(data, datetime.datetime):
+            return data.strftime("%Y-%m-%d %H:%M:%S")
+        return data
+
+    def add_if_not_exists(self, new_entry):
+        if not self.is_in(new_entry):
+            self.add(new_entry)
+            return True
+        return False
+
+    def is_in(self, new_entry):
+        raise NotImplementedError()
+
+    def add(self, new_entry):
+        raise NotImplementedError()
+
+
+class FeedStorage(StorageBase):
     def is_in(self, feed_entry: FeedEntry):
         for existing_entry in self.storage:
             if existing_entry['owner_name'] == feed_entry.owner_name \
@@ -297,19 +378,33 @@ class Storage:
             } for comment in feed_entry.comments]
         })
 
-    @staticmethod
-    def _for_json(data):
-        if data is None:
-            return None
-        if isinstance(data, datetime.datetime):
-            return data.strftime("%Y-%m-%d %H:%M:%S")
-        return data
 
-    def add_if_not_exists(self, feed_entry: FeedEntry):
-        if not self.is_in(feed_entry):
-            self.add(feed_entry)
-            return True
+class ListStorage(StorageBase):
+    def is_in(self, upload: UploadDetails):
+        for existing_entry in self.storage:
+            if existing_entry['md5'] == upload.md5 \
+                    and existing_entry['sha1'] == upload.sha1 \
+                    and existing_entry['sha256'] == upload.sha256 \
+                    and existing_entry['number_of_downloads'] == upload.number_of_downloads \
+                    and existing_entry['file_size'] == upload.file_size \
+                    and existing_entry['file_type'] == upload.file_type \
+                    and existing_entry['publish_date'] == self._for_json(upload.publish_date) \
+                    and existing_entry['uploader_name'] == self._for_json(upload.uploaded_by_name):
+                return True
         return False
+
+    def add(self, upload: UploadDetails):
+        self.storage.append({
+            'md5': upload.md5,
+            'sha1': upload.sha1,
+            'sha256': upload.sha256,
+            'file_size': upload.file_size,
+            'file_type': upload.file_type,
+            'number_of_downloads': upload.number_of_downloads,
+            'publish_date': self._for_json(upload.publish_date),
+            'uploader_name': upload.uploaded_by_name,
+            'tags': upload.tags,
+        })
 
 
 if __name__ == '__main__':
@@ -330,6 +425,13 @@ if __name__ == '__main__':
     )
     download_parser.add_argument('hashes', nargs='+')
 
+    list_parser = subparsers.add_parser(
+        'list',
+        help='Lists uploaded samples'
+    )
+    list_parser.add_argument('-s', '--store', help='Specify JSON file to store information in.')
+    list_parser.add_argument('-d', '--download', action='store_true', help='Download all new samples.')
+
     parser.add_argument('--user-name', default=os.getenv('VIRUSBAY_USER_NAME', None))
     parser.add_argument('--password', default=os.getenv('VIRUSBAY_PASSWORD', None))
     parser.add_argument('--debug', action='store_true')
@@ -348,7 +450,7 @@ if __name__ == '__main__':
     api = VirusBayApi(args.user_name, args.password, args.user_agent)
     try:
         if args.command == 'feed':
-            storage = Storage(args.store) if args.store else None
+            storage = FeedStorage(args.store) if args.store else None
             for page in range(args.page, args.page + args.page_count):
                 new_entry_count = 0
                 for entry in api.feed(page):
@@ -392,5 +494,26 @@ if __name__ == '__main__':
                     fp.write(payload)
             logger.info(F'Downloaded a total of {total_size} bytes')
 
+        elif args.command == 'list':
+            storage = ListStorage(args.store) if args.store else None
+            total_size = 0
+            for upload in api.list_samples():
+                if args.download:
+                    upload.update(api.get_details(upload.md5))
+                    if os.path.exists(upload.sha256):
+                        logger.info(F'File with name {upload.sha256} already exists, not downloading')
+                    else:
+                        logger.info(F'Downloading sample with hash {upload.sha256}...')
+                        payload = api.download(upload)
+                        total_size += len(payload)
+                        with open(upload.sha256, 'wb') as fp:
+                            fp.write(payload)
+
+                if storage:
+                    storage.add_if_not_exists(upload)
+            if args.download:
+                logger.info(F'Downloaded a total of {total_size} bytes.')
+            if storage:
+                storage.save(args.store)
     except VirusBayApiException as e:
         logger.exception(e)
