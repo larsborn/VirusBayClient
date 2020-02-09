@@ -154,6 +154,34 @@ class VirusBayUserDetails:
                F'>'
 
 
+class UploadDetails:
+    def __init__(self, id, uploaded_by_name, md5, sha1, sha256, publish_date, tags, pending):
+        self.id = id
+        self.uploaded_by_name = uploaded_by_name
+        self.md5 = md5
+        self.sha1 = sha1
+        self.sha256 = sha256
+        self.publish_date = publish_date
+        self.tags = tags
+        self.pending = pending
+
+    @staticmethod
+    def from_api(row):
+        return UploadDetails(
+            row['_id'],
+            row['uploadedBy']['name'],
+            row['md5'],
+            row['sha1'],
+            row['sha256'],
+            datetime.datetime.strptime(row['publishDate'], '%Y-%m-%dT%H:%M:%S.%fZ'),
+            [tag['lowerCaseName'] for tag in row['tags']],
+            row['pending'],
+        )
+
+    def __repr__(self):
+        return F'<UploadDetails id={self.id}>'
+
+
 class VirusBayApi:
     BASE_URL = 'https://beta.virusbay.io'
 
@@ -199,6 +227,32 @@ class VirusBayApi:
             raise VirusBayApiException(F'Cannot request feed', response.content)
         for row in response.json():
             yield FeedEntry.from_api(row)
+
+    def get_details(self, hash) -> UploadDetails:
+        response = self.session.get(F'https://beta.virusbay.io/sample/data/{hash}', headers={
+            'authority': 'beta.virusbay.io',
+            'authorization': F'JWT {self._get_token()}',
+        })
+        if response.status_code != 200:
+            raise VirusBayApiException(F'Cannot get object id for hash {hash}', response.content)
+
+        return UploadDetails.from_api(response.json())
+
+    def download(self, hash):
+        upload = self.get_details(hash)
+        response = self.session.get(F'{self.BASE_URL}/api/sample/{upload.id}/download/link', headers={
+            'authority': 'beta.virusbay.io',
+            'authorization': F'JWT {self._get_token()}',
+        })
+        if response.status_code != 200:
+            raise VirusBayApiException(F'Cannot download hash {hash}', response.content)
+
+        download_link = response.content
+        response = self.session.get(download_link)
+        if response.status_code != 200:
+            raise VirusBayApiException(F'Cannot download sample for hash {hash}', response.content)
+
+        return upload.sha256, response.content
 
 
 class ConsoleHandler(logging.Handler):
@@ -264,11 +318,18 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest='command')
+
     feed_parser = subparsers.add_parser('feed', help='Retrieve your personal feed from the page.')
     feed_parser.add_argument('-q', '--quiet', action='store_true', help='Do not print anything.')
     feed_parser.add_argument('-p', '--page', default=0, type=int, help='Page of seconds between polls.')
     feed_parser.add_argument('-c', '--page-count', default=1, type=int, help='Number of pages to pull.')
     feed_parser.add_argument('-s', '--store', help='Specify JSON file to store information in.')
+
+    download_parser = subparsers.add_parser(
+        'download',
+        help='Specify hashes (as SHA256, MD5 or SHA1 to download sample).'
+    )
+    download_parser.add_argument('hashes', nargs='+')
 
     parser.add_argument('--user-name', default=os.getenv('VIRUSBAY_USER_NAME', None))
     parser.add_argument('--password', default=os.getenv('VIRUSBAY_PASSWORD', None))
@@ -313,6 +374,22 @@ if __name__ == '__main__':
                     break
             if storage:
                 storage.save(args.store)
+
+        elif args.command == 'download':
+            total_size = 0
+            for sample_hash in args.hashes:
+                if os.path.exists(sample_hash):
+                    logger.warning(F'File with name "{sample_hash}" already exists, skipping download.')
+                    continue
+                logger.info(F'Downloading {sample_hash}...')
+                sha256, payload = api.download(sample_hash)
+                if os.path.exists(sha256):
+                    logger.warning(F'File with name "{sha256}" already exists, not saving.')
+                    continue
+                total_size += len(payload)
+                with open(sha256, 'wb') as fp:
+                    fp.write(payload)
+            logger.info(F'Downloaded a total of {total_size} bytes')
 
     except VirusBayApiException as e:
         logger.exception(e)
