@@ -502,6 +502,7 @@ if __name__ == '__main__':
                     upload.update(api.get_details(upload.md5))
                     if os.path.exists(upload.sha256):
                         logger.info(F'File with name {upload.sha256} already exists, not downloading')
+                        break
                     else:
                         logger.info(F'Downloading sample with hash {upload.sha256}...')
                         payload = api.download(upload)
